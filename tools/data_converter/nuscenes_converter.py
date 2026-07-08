@@ -38,6 +38,61 @@ NameMapping = {
     "vehicle.truck": "truck",
 }
 
+
+def normalize_polygon_occ_annos(sample_annos):
+    if sample_annos is None:
+        return None
+
+    if isinstance(sample_annos, dict):
+        if "polygons" in sample_annos:
+            polygons = sample_annos["polygons"]
+        elif "annotations" in sample_annos:
+            polygons = sample_annos["annotations"]
+        else:
+            normalized = {}
+            for label, polygon_list in sample_annos.items():
+                normalized[int(label)] = [
+                    np.asarray(polygon, dtype=np.float32).tolist()
+                    for polygon in polygon_list
+                    if len(polygon) >= 3
+                ]
+            return normalized
+    else:
+        polygons = sample_annos
+
+    normalized = OrderedDict()
+    for item in polygons:
+        if not isinstance(item, dict):
+            continue
+        label = item.get("label", item.get("category_id"))
+        polygon = item.get("polygon", item.get("points", item.get("vertices")))
+        if label is None or polygon is None or len(polygon) < 3:
+            continue
+        label = int(label)
+        normalized.setdefault(label, [])
+        normalized[label].append(np.asarray(polygon, dtype=np.float32).tolist())
+    return normalized
+
+
+def load_polygon_occ_annotations(path):
+    if path is None:
+        return None
+
+    data = mmcv.load(path)
+    if isinstance(data, dict):
+        if "results" in data:
+            data = data["results"]
+        elif "annotations" in data:
+            data = data["annotations"]
+
+    if not isinstance(data, dict):
+        raise ValueError("polygon_occ annotations must be a dict keyed by sample token")
+
+    normalized = {}
+    for token, sample_annos in data.items():
+        normalized[token] = normalize_polygon_occ_annos(sample_annos)
+    return normalized
+
 def quart_to_rpy(qua):
     x, y, z, w = qua
     roll = math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
@@ -73,7 +128,8 @@ def create_nuscenes_infos(root_path,
                           info_prefix,
                           version='v1.0-trainval',
                           max_sweeps=10,
-                          roi_size=(30, 60),):
+                          roi_size=(30, 60),
+                          polygon_occ_path=None,):
     """Create info file of nuscene dataset.
 
     Given the raw data, generate its related info file in pkl format.
@@ -90,6 +146,7 @@ def create_nuscenes_infos(root_path,
     nusc = NuScenes(version=version, dataroot=root_path, verbose=True)
     nusc_map_extractor = NuscMapExtractor(root_path, roi_size)
     nusc_can_bus = NuScenesCanBus(dataroot=can_bus_root_path)
+    polygon_occ_annos = load_polygon_occ_annotations(polygon_occ_path)
     from nuscenes.utils import splits
     available_vers = ['v1.0-trainval', 'v1.0-test', 'v1.0-mini']
     assert version in available_vers
@@ -130,7 +187,15 @@ def create_nuscenes_infos(root_path,
             len(train_scenes), len(val_scenes)))
 
     train_nusc_infos, val_nusc_infos = _fill_trainval_infos(
-        nusc, nusc_map_extractor, nusc_can_bus, train_scenes, val_scenes, test, max_sweeps=max_sweeps)
+        nusc,
+        nusc_map_extractor,
+        nusc_can_bus,
+        train_scenes,
+        val_scenes,
+        test,
+        max_sweeps=max_sweeps,
+        polygon_occ_annos=polygon_occ_annos,
+    )
 
     metadata = dict(version=version)
     if test:
@@ -199,7 +264,8 @@ def _fill_trainval_infos(nusc,
                          test=False,
                          max_sweeps=10,
                          fut_ts=12,
-                         ego_fut_ts=6):
+                         ego_fut_ts=6,
+                         polygon_occ_annos=None):
     """Generate the train/val infos from the raw data.
 
     Args:
@@ -270,6 +336,10 @@ def _fill_trainval_infos(nusc,
         map_geoms = nusc_map_extractor.get_map_geom(map_location, translation, rotation)
         map_annos = geom2anno(map_geoms)
         info['map_annos'] = map_annos
+        if polygon_occ_annos is not None:
+            sample_polygon_occ = polygon_occ_annos.get(sample['token'])
+            if sample_polygon_occ is not None:
+                info['polygon_occ_annos'] = sample_polygon_occ
 
         # obtain 6 image's information per frame
         camera_types = [
@@ -517,7 +587,8 @@ def nuscenes_data_prep(root_path,
                        version,
                        dataset_name,
                        out_dir,
-                       max_sweeps=10):
+                       max_sweeps=10,
+                       polygon_occ_path=None):
     """Prepare data related to nuScenes dataset.
 
     Related data consists of '.pkl' files recording basic infos,
@@ -532,7 +603,14 @@ def nuscenes_data_prep(root_path,
         max_sweeps (int): Number of input consecutive frames. Default: 10
     """
     create_nuscenes_infos(
-        root_path, out_dir, can_bus_root_path, info_prefix, version=version, max_sweeps=max_sweeps)
+        root_path,
+        out_dir,
+        can_bus_root_path,
+        info_prefix,
+        version=version,
+        max_sweeps=max_sweeps,
+        polygon_occ_path=polygon_occ_path,
+    )
 
 
 parser = argparse.ArgumentParser(description='Data converter arg parser')
@@ -567,6 +645,13 @@ parser.add_argument(
     help='name of info pkl')
 parser.add_argument('--extra-tag', type=str, default='kitti')
 parser.add_argument(
+    '--polygon-occ-path',
+    type=str,
+    default=None,
+    required=False,
+    help='optional external polygon occ annotations keyed by sample token',
+)
+parser.add_argument(
     '--workers', type=int, default=4, help='number of threads to be used')
 args = parser.parse_args()
 
@@ -580,7 +665,8 @@ if __name__ == '__main__':
             version=train_version,
             dataset_name='NuScenesDataset',
             out_dir=args.out_dir,
-            max_sweeps=args.max_sweeps)
+            max_sweeps=args.max_sweeps,
+            polygon_occ_path=args.polygon_occ_path)
         test_version = f'{args.version}-test'
         nuscenes_data_prep(
             root_path=args.root_path,
@@ -589,7 +675,8 @@ if __name__ == '__main__':
             version=test_version,
             dataset_name='NuScenesDataset',
             out_dir=args.out_dir,
-            max_sweeps=args.max_sweeps)
+            max_sweeps=args.max_sweeps,
+            polygon_occ_path=args.polygon_occ_path)
     elif args.dataset == 'nuscenes' and args.version == 'v1.0-mini':
         train_version = f'{args.version}'
         nuscenes_data_prep(
@@ -599,4 +686,5 @@ if __name__ == '__main__':
             version=train_version,
             dataset_name='NuScenesDataset',
             out_dir=args.out_dir,
-            max_sweeps=args.max_sweeps)
+            max_sweeps=args.max_sweeps,
+            polygon_occ_path=args.polygon_occ_path)

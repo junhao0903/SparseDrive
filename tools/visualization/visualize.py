@@ -20,6 +20,7 @@ plot_choices = dict(
     track = True, # True: draw history tracked boxes
     motion = True,
     map = True,
+    occ = False,
     planning = True,
 )
 START = 0

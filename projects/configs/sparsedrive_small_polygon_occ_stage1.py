@@ -258,6 +258,7 @@ eval_mode = dict(
     with_det=True,
     with_tracking=True,
     with_map=False,
+    with_occ=True,
     with_motion=False,
     with_planning=False,
     tracking_threshold=0.2,

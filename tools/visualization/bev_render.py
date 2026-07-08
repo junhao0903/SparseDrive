@@ -118,6 +118,7 @@ class BEVRender:
         self.draw_detection_gt(data)
         self.draw_motion_gt(data)
         self.draw_map_gt(data)
+        self.draw_occ_gt(data)
         self.draw_planning_gt(data)
         self._render_sdc_car()
         self._render_command(data)
@@ -130,6 +131,7 @@ class BEVRender:
         self.draw_track_pred(result)
         self.draw_motion_pred(result)
         self.draw_map_pred(result)
+        self.draw_occ_pred(result)
         self.draw_planning_pred(data, result)
         self._render_sdc_car()
         self._render_command(data)
@@ -311,6 +313,33 @@ class BEVRender:
             x = pts[:, 0]
             y = pts[:, 1]
             plt.plot(x, y, color=color, linewidth=3, marker='o', linestyle='-', markersize=7)
+
+    def draw_occ_gt(self, data):
+        if not self.plot_choices.get('occ', False):
+            return
+        polygon_geoms = data.get('polygon_occ_geoms')
+        if polygon_geoms is None:
+            return
+        for label, polygon_list in polygon_geoms.items():
+            color = color_mapping[label % len(color_mapping)]
+            for polygon in polygon_list:
+                pts = np.asarray(polygon.exterior.coords, dtype=np.float32)
+                self.axes.plot(pts[:, 0], pts[:, 1], color=color, linewidth=2, linestyle='--')
+
+    def draw_occ_pred(self, result):
+        if not (self.plot_choices['draw_pred'] and self.plot_choices.get('occ', False)):
+            return
+        occ_result = result.get('occ', result)
+        if 'polygons' not in occ_result:
+            return
+        for i in range(len(occ_result['scores'])):
+            score = occ_result['scores'][i]
+            if score < MAP_SCORE_THRESH:
+                continue
+            color = color_mapping[int(occ_result['labels'][i]) % len(color_mapping)]
+            pts = np.asarray(occ_result['polygons'][i], dtype=np.float32)
+            pts = np.concatenate([pts, pts[:1]], axis=0)
+            self.axes.plot(pts[:, 0], pts[:, 1], color=color, linewidth=2, linestyle='-')
 
     def draw_planning_gt(self, data):
         if not self.plot_choices['planning']:

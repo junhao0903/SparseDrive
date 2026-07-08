@@ -148,20 +148,25 @@ def get_flops_params(args):
         * num_key_pts_det
         * bilinear_flops
     )
-    num_key_pts_map = (
-        cfg.model["head"]['map_head']["deformable_model"]["kps_generator"]["num_learnable_pts"]
-        + len(cfg.model["head"]['map_head']["deformable_model"]["kps_generator"]["fix_height"])
-    ) * cfg.model["head"]['map_head']["deformable_model"]["kps_generator"]["num_sample"]
-    deformable_agg_flops_map = (
-        cfg.num_decoder
-        * cfg.embed_dims
-        * cfg.num_levels
-        * cfg.model["head"]['map_head']["instance_bank"]["num_anchor"]
-        * cfg.model["head"]['map_head']["deformable_model"]["num_cams"]
-        * num_key_pts_map
-        * bilinear_flops
-    )
-    deformable_agg_flops = deformable_agg_flops_det + deformable_agg_flops_map
+    aux_head_cfg = cfg.model["head"].get('map_head')
+    if aux_head_cfg is None:
+        aux_head_cfg = cfg.model["head"].get('polygon_occ_head')
+    deformable_agg_flops_aux = 0
+    if aux_head_cfg is not None:
+        num_key_pts_aux = (
+            aux_head_cfg["deformable_model"]["kps_generator"]["num_learnable_pts"]
+            + len(aux_head_cfg["deformable_model"]["kps_generator"]["fix_height"])
+        ) * aux_head_cfg["deformable_model"]["kps_generator"]["num_sample"]
+        deformable_agg_flops_aux = (
+            cfg.num_decoder
+            * cfg.embed_dims
+            * cfg.num_levels
+            * aux_head_cfg["instance_bank"]["num_anchor"]
+            * aux_head_cfg["deformable_model"]["num_cams"]
+            * num_key_pts_aux
+            * bilinear_flops
+        )
+    deformable_agg_flops = deformable_agg_flops_det + deformable_agg_flops_aux
 
     for module in ["total", "img_backbone", "img_neck", "head"]:
         if module != "total":

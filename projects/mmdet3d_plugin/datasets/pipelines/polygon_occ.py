@@ -6,6 +6,8 @@ from shapely.geometry import LineString, Polygon
 
 from mmdet.datasets.builder import PIPELINES
 
+from ..map_utils.polygon_occ_utils import canonicalize_polygon, sample_closed_polygon
+
 
 @PIPELINES.register_module(force=True)
 class VectorizePolygonOcc(object):
@@ -79,37 +81,9 @@ class VectorizePolygonOcc(object):
 
     def sample_polygon(self, polygon: Polygon) -> NDArray:
         points = np.asarray(polygon.exterior.coords, dtype=np.float32)
-        if np.allclose(points[0], points[-1], atol=1e-5):
-            points = points[:-1]
-        closed = np.concatenate([points, points[:1]], axis=0)
-        edges = closed[1:] - closed[:-1]
-        edge_lengths = np.linalg.norm(edges, axis=1)
-        perimeter = float(edge_lengths.sum())
-        if perimeter <= 1e-6:
-            return np.repeat(points[:1], self.sample_num, axis=0)
-
-        cumulative = np.concatenate(
-            [np.array([0.0], dtype=np.float32), np.cumsum(edge_lengths)]
-        )
-        target_distances = (
-            np.arange(self.sample_num, dtype=np.float32) * perimeter / self.sample_num
-        )
-
-        sampled = []
-        edge_idx = 0
-        for distance in target_distances:
-            while (
-                edge_idx < len(edge_lengths) - 1
-                and cumulative[edge_idx + 1] <= distance
-            ):
-                edge_idx += 1
-            edge_length = edge_lengths[edge_idx]
-            if edge_length <= 1e-8:
-                sampled.append(closed[edge_idx].copy())
-                continue
-            alpha = (distance - cumulative[edge_idx]) / edge_length
-            sampled.append(closed[edge_idx] + alpha * edges[edge_idx])
-        return np.asarray(sampled, dtype=np.float32)[:, : self.coords_dim]
+        sampled = sample_closed_polygon(points, num_points=self.sample_num)
+        sampled = sampled[:, : self.coords_dim]
+        return canonicalize_polygon(sampled)
 
     def normalize_pts(self, pts: NDArray) -> NDArray:
         origin = -np.array([self.roi_size[0] / 2, self.roi_size[1] / 2])

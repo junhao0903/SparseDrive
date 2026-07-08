@@ -698,6 +698,35 @@ class NuScenes3DDataset(Dataset):
         mmcv.dump(submissions, out_path)
         return out_path
 
+    def format_occ_results(self, results, prefix=None):
+        submissions = {'results': {}}
+
+        for j, pred in enumerate(results):
+            if pred is None:
+                continue
+            pred = pred['img_bbox']
+            occ_pred = pred.get('occ', pred)
+            single_case = {'polygons': [], 'vectors': [], 'scores': [], 'labels': []}
+            token = self.data_infos[j]['token']
+            polygons = occ_pred.get('polygons', occ_pred.get('vectors', []))
+            scores = occ_pred.get('scores', [])
+            labels = occ_pred.get('labels', [])
+            for i in range(len(scores)):
+                polygon = polygons[i]
+                if len(polygon) < 3:
+                    continue
+                single_case['polygons'].append(polygon)
+                single_case['vectors'].append(polygon)
+                single_case['scores'].append(scores[i])
+                single_case['labels'].append(labels[i])
+            submissions['results'][token] = single_case
+
+        out_path = osp.join(prefix, 'submission_polygon_occ.json')
+        print(f'saving polygon occ submissions to {out_path}')
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        mmcv.dump(submissions, out_path)
+        return out_path
+
     def format_motion_results(self, results, jsonfile_prefix=None, tracking=False, thresh=None):
         nusc_annos = {}
         mapped_class_names = self.CLASSES
@@ -888,6 +917,13 @@ class NuScenes3DDataset(Dataset):
             map_results_dict = self.map_evaluator.evaluate(result_path, logger=logger)
             results_dict.update(map_results_dict)
 
+        if eval_mode.get('with_occ', False):
+            from .evaluation.polygon_occ.polygon_eval import PolygonOccEvaluate
+            self.occ_evaluator = PolygonOccEvaluate(self.eval_config)
+            result_path = self.format_occ_results(results, prefix=self.work_dir)
+            occ_results_dict = self.occ_evaluator.evaluate(result_path, logger=logger)
+            results_dict.update(occ_results_dict)
+
         if eval_mode['with_motion']:
             thresh = eval_mode["motion_threshhold"]
             result_files = self.format_motion_results(results, jsonfile_prefix=self.work_dir, thresh=thresh)
@@ -927,6 +963,11 @@ class NuScenes3DDataset(Dataset):
             metric_str += f'divider= {results_dict["divider"]:.4f}\n' 
             metric_str += f'boundary= {results_dict["boundary"]:.4f}\n' 
             metric_str += f'mAP_normal= {results_dict["mAP_normal"]:.4f}\n\n' 
+
+        if "occ_pred_valid_ratio" in results_dict:
+            metric_str += f'occ_pred_valid_ratio= {results_dict["occ_pred_valid_ratio"]:.4f}\n'
+            metric_str += f'occ_pred_mean_polygons= {results_dict["occ_pred_mean_polygons"]:.4f}\n'
+            metric_str += f'occ_pred_coverage= {results_dict["occ_pred_coverage"]:.4f}\n\n'
 
         if "car_EPA" in results_dict:
             metric_str += f'Car / Ped\n' 
