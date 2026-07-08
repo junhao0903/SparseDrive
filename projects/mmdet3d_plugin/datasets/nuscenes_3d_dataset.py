@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 import pyquaternion
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Polygon
 from nuscenes.utils.data_classes import Box as NuScenesBox
 from nuscenes.eval.detection.config import config_factory as det_configs
 from nuscenes.eval.common.config import config_factory as track_configs
@@ -294,6 +294,24 @@ class NuScenes3DDataset(Dataset):
                 geom = LineString(anno)
                 map_geoms[label].append(geom)
         return map_geoms
+
+    def polygon_anno2geom(self, annos):
+        polygon_geoms = {}
+        for label, anno_list in annos.items():
+            polygon_geoms[label] = []
+            for anno in anno_list:
+                coords = np.asarray(anno, dtype=np.float32)
+                if len(coords) < 3:
+                    continue
+                polygon = Polygon(coords)
+                if polygon.is_empty or polygon.area <= 0:
+                    continue
+                if not polygon.is_valid:
+                    polygon = polygon.buffer(0)
+                    if polygon.is_empty or polygon.area <= 0 or not polygon.is_valid:
+                        continue
+                polygon_geoms[label].append(polygon)
+        return polygon_geoms
     
     def get_data_info(self, index):
         info = self.data_infos[index]
@@ -324,6 +342,10 @@ class NuScenes3DDataset(Dataset):
 
         map_geoms = self.anno2geom(info["map_annos"])
         input_dict["map_geoms"] = map_geoms
+        if "polygon_occ_annos" in info:
+            input_dict["polygon_occ_geoms"] = self.polygon_anno2geom(
+                info["polygon_occ_annos"]
+            )
 
         if self.modality["use_camera"]:
             image_paths = []

@@ -12,6 +12,7 @@ from .augment import (
 )
 from .loading import LoadMultiViewImageFromFiles, LoadPointsFromFile
 from .vectorize import VectorizeMap
+from .polygon_occ import VectorizePolygonOcc
 
 __all__ = [
     "InstanceNameFilter",
@@ -25,4 +26,5 @@ __all__ = [
     "LoadMultiViewImageFromFiles",
     "LoadPointsFromFile",
     "VectorizeMap",
+    "VectorizePolygonOcc",
 ]

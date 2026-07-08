@@ -96,6 +96,8 @@ class NuScenesSparse4DAdaptor(object):
         for key in [
             'gt_map_labels', 
             'gt_map_pts',
+            'gt_polygon_occ_labels',
+            'gt_polygon_occ_pts',
             'gt_agent_fut_trajs',
             'gt_agent_fut_masks',
         ]:

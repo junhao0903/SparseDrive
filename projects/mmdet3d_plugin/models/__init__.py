@@ -15,6 +15,7 @@ from .detection3d import (
 )
 from .map import *
 from .motion import *
+from .polygon_occ import *
 
 
 __all__ = [
