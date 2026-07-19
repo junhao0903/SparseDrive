@@ -4,6 +4,10 @@
 
 **Polygon OCC**
 
+> Workspace note: the current active SparseDrive Polygon OCC baseline in this
+> repository uses **20 points per polygon**. Historical design discussion in
+> this document may still describe an earlier 32-point target.
+
 Target architecture:
 
 **SparseDrive**

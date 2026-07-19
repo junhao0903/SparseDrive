@@ -90,6 +90,17 @@ We found that some collision cases were not taken into consideration in our prev
 ## Quick Start
 [Quick Start](docs/quick_start.md)
 
+## Polygon OCC workspace note
+
+This workspace currently uses a **20-point Polygon OCC baseline** for the custom
+`sparsedrive_small_polygon_occ_stage1.py` path.
+
+- Polygon OCC points per instance: `20`
+- Anchor file: `data/kmeans/kmeans_polygon_occ_100_20.npy`
+
+This is a local Polygon OCC workflow update and is separate from the original
+released SparseDrive map branch.
+
 ## Citation
 If you find SparseDrive useful in your research or applications, please consider giving us a star &#127775; and citing it by the following BibTeX entry.
 ```
@@ -108,4 +119,3 @@ If you find SparseDrive useful in your research or applications, please consider
 - [StreamPETR](https://github.com/exiawsh/StreamPETR)
 - [StreamMapNet](https://github.com/yuantianyuan01/StreamMapNet)
 - [mmdet3d](https://github.com/open-mmlab/mmdetection3d)
-

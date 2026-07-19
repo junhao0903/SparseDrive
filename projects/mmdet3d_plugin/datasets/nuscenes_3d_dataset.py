@@ -80,6 +80,7 @@ class NuScenes3DDataset(Dataset):
     def __init__(
         self,
         ann_file,
+        polygon_occ_ann_file=None,
         pipeline=None,
         data_root=None,
         classes=None,
@@ -106,6 +107,7 @@ class NuScenes3DDataset(Dataset):
         super().__init__()
         self.data_root = data_root
         self.ann_file = ann_file
+        self.polygon_occ_ann_file = polygon_occ_ann_file
         self.test_mode = test_mode
         self.modality = modality
         self.box_mode_3d = 0
@@ -116,6 +118,22 @@ class NuScenes3DDataset(Dataset):
             self.MAP_CLASSES = map_classes
         self.cat2id = {name: i for i, name in enumerate(self.CLASSES)}
         self.data_infos = self.load_annotations(self.ann_file)
+        self.polygon_occ_annos = self.load_polygon_occ_annotations(
+            self.polygon_occ_ann_file
+        )
+        if self.polygon_occ_annos is not None:
+            missing_polygon_occ_tokens = []
+            for info in self.data_infos:
+                token = info.get("token")
+                if token in self.polygon_occ_annos:
+                    info["polygon_occ_annos"] = self.polygon_occ_annos[token]
+                else:
+                    missing_polygon_occ_tokens.append(token)
+            if missing_polygon_occ_tokens:
+                raise ValueError(
+                    "polygon_occ_ann_file is missing tokens from ann_file. "
+                    f"Examples: {missing_polygon_occ_tokens[:10]}"
+                )
 
         if pipeline is not None:
             self.pipeline = Compose(pipeline)
@@ -285,6 +303,19 @@ class NuScenes3DDataset(Dataset):
         self.version = self.metadata["version"]
         print(self.metadata)
         return data_infos
+
+    def load_polygon_occ_annotations(self, ann_file):
+        if ann_file is None:
+            return None
+        data = mmcv.load(ann_file, file_format="pkl")
+        if isinstance(data, dict):
+            if "results" in data:
+                data = data["results"]
+            elif "annotations" in data:
+                data = data["annotations"]
+        if not isinstance(data, dict):
+            raise ValueError("polygon_occ_ann_file must be a dict keyed by sample token")
+        return data
     
     def anno2geom(self, annos):
         map_geoms = {}
@@ -310,7 +341,10 @@ class NuScenes3DDataset(Dataset):
                     polygon = polygon.buffer(0)
                     if polygon.is_empty or polygon.area <= 0 or not polygon.is_valid:
                         continue
-                polygon_geoms[label].append(polygon)
+                # Preserve the original point sequence from the sidecar so the
+                # Polygon OCC pipeline can decide whether to reuse fixed sampled
+                # points directly or to resample a raw polygon contour.
+                polygon_geoms[label].append(coords)
         return polygon_geoms
     
     def get_data_info(self, index):

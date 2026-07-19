@@ -1,0 +1,17 @@
+{
+  "__comments__": [
+    "Hybrid Polygon OCC GT: thing/dynamic classes come from detection box footprints.",
+    "Keys are detection class names from gt_names in the base nuScenes info pkl.",
+    "Values are Polygon OCC target ids matching occ_class_names in sparsedrive_small_polygon_occ_stage1.py."
+  ],
+  "barrier": 0,
+  "car": 1,
+  "bus": 2,
+  "construction_vehicle": 2,
+  "trailer": 2,
+  "truck": 2,
+  "bicycle": 3,
+  "motorcycle": 3,
+  "pedestrian": 4,
+  "traffic_cone": 5
+}

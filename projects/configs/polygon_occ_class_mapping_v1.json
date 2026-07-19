@@ -1,0 +1,35 @@
+{
+  "__comments__": [
+    "This file stores the default occupancy-derived (stuff-style) Occ3D raw-id -> Polygon OCC target-id mapping.",
+    "Because JSON does not support true comments, explanatory metadata is stored under __* keys.",
+    "The converter only reads numeric keys such as '1', '4', '11'.",
+    "Ignored raw ids are configured separately in the data-prep script, currently: 0, 12, 17.",
+    "Dynamic/thing classes such as car, truck, bicycle, pedestrian, traffic_cone, and barrier are intentionally omitted here because they are generated from bbox footprints in the hybrid GT pipeline.",
+    "Occ3D semantics commonly follow: 0=void/others, 1=barrier, 2=bicycle, 3=bus, 4=car, 5=construction_vehicle, 6=motorcycle, 7=pedestrian, 8=traffic_cone, 9=trailer, 10=truck, 11=driveable_surface, 12=other_flat, 13=sidewalk, 14=terrain, 15=manmade, 16=vegetation, 17=free."
+  ],
+  "__polygon_occ_id_meanings__": {
+    "0": "barrier (bbox source)",
+    "1": "car (bbox source)",
+    "2": "large_vehicle (bbox source)",
+    "3": "two_wheeler (bbox source)",
+    "4": "pedestrian (bbox source)",
+    "5": "traffic_cone (bbox source)",
+    "6": "driveable_surface",
+    "7": "sidewalk",
+    "8": "terrain",
+    "9": "manmade",
+    "10": "vegetation"
+  },
+  "__mapping_explanations__": {
+    "11": "Occ3D driveable_surface -> Polygon OCC driveable_surface",
+    "13": "Occ3D sidewalk -> Polygon OCC sidewalk",
+    "14": "Occ3D terrain -> Polygon OCC terrain",
+    "15": "Occ3D manmade -> Polygon OCC manmade",
+    "16": "Occ3D vegetation -> Polygon OCC vegetation"
+  },
+  "11": 6,
+  "13": 7,
+  "14": 8,
+  "15": 9,
+  "16": 10
+}

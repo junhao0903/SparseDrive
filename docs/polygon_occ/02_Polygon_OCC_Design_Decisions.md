@@ -31,6 +31,10 @@ Claude Code should use this document as the **design intent and constraint refer
 
 The core V1 decisions are:
 
+> Workspace note: the current active implementation baseline in this repository
+> has been reduced to **20 points per polygon** for practical memory reasons.
+> The table below records the original V1 design intent.
+
 | Topic | V1 Decision |
 |---|---|
 | Base model | SparseDrive |
