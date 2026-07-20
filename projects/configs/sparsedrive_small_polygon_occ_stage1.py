@@ -612,15 +612,18 @@ eval_pipeline = [
     ),
     dict(type="InstanceNameFilter", classes=class_names),
     dict(
-        type='VectorizeMap',
+        type='VectorizePolygonOcc',
         roi_size=roi_size,
-        simplify=True,
         normalize=False,
+        sample_num=polygon_occ_num_sample,
+        closed_only=True,
+        permute=False,
     ),
     dict(
         type='Collect',
         keys=[
-            'vectors',
+            'gt_polygon_occ_labels',
+            'gt_polygon_occ_pts',
             "gt_bboxes_3d",
             "gt_labels_3d",
             'gt_agent_fut_trajs',
@@ -647,6 +650,7 @@ data_basic_config = dict(
     data_root=data_root,
     classes=class_names,
     map_classes=map_class_names,
+    occ_classes=occ_class_names,
     modality=input_modality,
     version="v1.0-trainval",
 )

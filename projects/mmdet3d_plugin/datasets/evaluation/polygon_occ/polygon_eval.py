@@ -1,91 +1,274 @@
-from copy import deepcopy
+import prettytable
 from typing import Dict, List, Optional
+from time import time
+from copy import deepcopy
+from multiprocessing import Pool
+from logging import Logger
+from functools import partial, cached_property
 
 import numpy as np
+from numpy.typing import NDArray
+from shapely.geometry import LineString
+
 import mmcv
-import prettytable
 from mmcv import Config
-from mmcv.utils import print_log
 from mmdet.datasets import build_dataset
 
-from projects.mmdet3d_plugin.datasets.map_utils.polygon_occ_utils import (
-    polygon_validity_stats,
-)
+from ..map.AP import instance_match, average_precision
 
+INTERP_NUM = 200 # number of points to interpolate during evaluation
+THRESHOLDS = [0.5, 1.0, 1.5] # AP thresholds
+N_WORKERS = 16 # num workers to parallel
 
 class PolygonOccEvaluate(object):
-    def __init__(self, dataset_cfg: Config) -> None:
-        self.dataset = build_dataset(dataset_cfg)
+    """Evaluator for polygon occupancy.
 
-    def _collect_gt(self) -> Dict[str, Dict[int, List[np.ndarray]]]:
+    Args:
+        dataset_cfg (Config): dataset cfg for gt
+        n_workers (int): num workers to parallel
+    """
+
+    def __init__(self, dataset_cfg: Config, n_workers: int=N_WORKERS) -> None:
+        self.dataset = build_dataset(dataset_cfg)
+        classes = self.dataset.OCC_CLASSES
+        self.cat2id = {cls: i for i, cls in enumerate(classes)}
+        self.id2cat = {v: k for k, v in self.cat2id.items()}
+        self.n_workers = n_workers
+        self.thresholds = [0.5, 1.0, 1.5]
+
+    @cached_property
+    def gts(self) -> Dict[str, Dict[int, List[NDArray]]]:
+        """Collect GT polygons keyed by sample token.
+
+        Unlike VectorEvaluate (which runs the eval_pipeline through a
+        dataloader), polygon OCC sidecar files are already sampled and
+        formatted, so we read them directly from data_infos.
+        """
+        print('collecting gts...')
         gts = {}
+        pbar = mmcv.ProgressBar(len(self.dataset.data_infos))
         for info in self.dataset.data_infos:
-            token = info["token"]
-            annos = info.get("polygon_occ_annos", {})
+            token = deepcopy(info['token'])
+            annos = info.get('polygon_occ_annos', {})
             sample = {}
             for label, polygons in annos.items():
-                sample[int(label)] = [np.asarray(poly, dtype=np.float32) for poly in polygons]
+                sample[int(label)] = [
+                    np.asarray(poly, dtype=np.float32) for poly in polygons
+                ]
             gts[token] = sample
+            pbar.update()
         return gts
 
-    def _summarize_sample(self, polygons: List[np.ndarray]) -> Dict[str, float]:
-        if not polygons:
-            return {
-                "count": 0,
-                "valid_ratio": 0.0,
-                "mean_area": 0.0,
+    def interp_fixed_num(self,
+                         vector: NDArray,
+                         num_pts: int) -> NDArray:
+        ''' Interpolate a polygon boundary to a fixed number of points.
+
+        The polygon is explicitly closed before interpolation so that the
+        full boundary loop is sampled uniformly.
+
+        Args:
+            vector (array): polygon coordinates, shape (M, 2)
+            num_pts (int):
+
+        Returns:
+            sampled_points (array): interpolated coordinates
+        '''
+        vector = np.asarray(vector, dtype=np.float32)
+        if len(vector) < 2:
+            return np.zeros((num_pts, 2), dtype=np.float32)
+        if not np.allclose(vector[0], vector[-1], atol=1e-5):
+            vector = np.concatenate([vector, vector[:1]], axis=0)
+        line = LineString(vector)
+        distances = np.linspace(0, line.length, num_pts)
+        sampled_points = np.array([list(line.interpolate(distance).coords)
+            for distance in distances]).squeeze()
+
+        return sampled_points
+
+    def _evaluate_single(self,
+                         pred_vectors: List,
+                         scores: List,
+                         groundtruth: List,
+                         thresholds: List,
+                         metric: str='metric') -> Dict[int, NDArray]:
+        ''' Do single-frame matching for one class.
+
+        Args:
+            pred_vectors (List): List[vector(ndarray) (different length)],
+            scores (List): List[score(float)]
+            groundtruth (List): List of vectors
+            thresholds (List): List of thresholds
+
+        Returns:
+            tp_fp_score_by_thr (Dict): matching results at different thresholds
+                e.g. {0.5: (M, 2), 1.0: (M, 2), 1.5: (M, 2)}
+        '''
+        pred_lines = []
+
+        # interpolate predictions
+        for vector in pred_vectors:
+            vector = np.array(vector)
+            vector_interp = self.interp_fixed_num(vector, INTERP_NUM)
+            pred_lines.append(vector_interp)
+        if pred_lines:
+            pred_lines = np.stack(pred_lines)
+        else:
+            pred_lines = np.zeros((0, INTERP_NUM, 2))
+
+        # interpolate groundtruth
+        gt_lines = []
+        for vector in groundtruth:
+            vector_interp = self.interp_fixed_num(vector, INTERP_NUM)
+            gt_lines.append(vector_interp)
+        if gt_lines:
+            gt_lines = np.stack(gt_lines)
+        else:
+            gt_lines = np.zeros((0, INTERP_NUM, 2))
+
+        scores = np.array(scores)
+        tp_fp_list = instance_match(pred_lines, scores, gt_lines, thresholds, metric) # (M, 2)
+        tp_fp_score_by_thr = {}
+        for i, thr in enumerate(thresholds):
+            tp, fp = tp_fp_list[i]
+            tp_fp_score = np.hstack([tp[:, None], fp[:, None], scores[:, None]])
+            tp_fp_score_by_thr[thr] = tp_fp_score
+
+        return tp_fp_score_by_thr # {0.5: (M, 2), 1.0: (M, 2), 1.5: (M, 2)}
+
+    def evaluate(self,
+                 result_path: str,
+                 metric: str='chamfer',
+                 logger: Optional[Logger]=None) -> Dict[str, float]:
+        ''' Do evaluation for a submission file and print evalution results to `logger` if specified.
+        The submission will be aligned by tokens before evaluation. We use multi-worker to speed up.
+
+        Args:
+            result_path (str): path to submission file
+            metric (str): distance metric. Default: 'chamfer'
+            logger (Logger): logger to print evaluation result, Default: None
+
+        Returns:
+            new_result_dict (Dict): evaluation results. AP by categories.
+        '''
+        results = mmcv.load(result_path)
+        results = results['results']
+
+        # re-group samples and gt by label
+        samples_by_cls = {label: [] for label in self.id2cat.keys()}
+        num_gts = {label: 0 for label in self.id2cat.keys()}
+        num_preds = {label: 0 for label in self.id2cat.keys()}
+
+        # align by token
+        for token, gt in self.gts.items():
+            if token in results.keys():
+                pred = results[token]
+            else:
+                pred = {'polygons': [], 'vectors': [], 'scores': [], 'labels': []}
+
+            pred_vectors = pred.get('polygons', pred.get('vectors', []))
+            # for every sample
+            vectors_by_cls = {label: [] for label in self.id2cat.keys()}
+            scores_by_cls = {label: [] for label in self.id2cat.keys()}
+
+            for i in range(len(pred['labels'])):
+                # i-th pred polygon in sample
+                label = pred['labels'][i]
+                vector = pred_vectors[i]
+                score = pred['scores'][i]
+                if len(vector) < 3:
+                    continue
+
+                vectors_by_cls[label].append(vector)
+                scores_by_cls[label].append(score)
+
+            for label in self.id2cat.keys():
+                new_sample = (vectors_by_cls[label], scores_by_cls[label], gt.get(label, []))
+                num_gts[label] += len(gt.get(label, []))
+                num_preds[label] += len(scores_by_cls[label])
+                samples_by_cls[label].append(new_sample)
+
+        result_dict = {}
+
+        print(f'\nevaluating {len(self.id2cat)} categories...')
+        start = time()
+        if self.n_workers > 0:
+            pool = Pool(self.n_workers)
+
+        sum_mAP = 0
+        pbar = mmcv.ProgressBar(len(self.id2cat))
+        for label in self.id2cat.keys():
+            samples = samples_by_cls[label] # List[(pred_vectors, scores, gts)]
+            result_dict[self.id2cat[label]] = {
+                'num_gts': num_gts[label],
+                'num_preds': num_preds[label]
             }
-        valid = 0
-        areas = []
-        for polygon in polygons:
-            stats = polygon_validity_stats(np.asarray(polygon, dtype=np.float32))
-            valid += int(stats["is_valid"] > 0)
-            areas.append(stats["area"])
-        return {
-            "count": len(polygons),
-            "valid_ratio": valid / max(len(polygons), 1),
-            "mean_area": float(np.mean(areas)) if areas else 0.0,
-        }
+            sum_AP = 0
 
-    def evaluate(self, result_path: str, logger: Optional[object] = None) -> Dict[str, float]:
-        results = mmcv.load(result_path)["results"]
-        gts = self._collect_gt()
+            fn = partial(self._evaluate_single, thresholds=self.thresholds, metric=metric)
+            if self.n_workers > 0 and len(samples) > 81:
+                tpfp_score_list = pool.starmap(fn, samples)
+            else:
+                tpfp_score_list = []
+                for sample in samples:
+                    tpfp_score_list.append(fn(*sample))
 
-        pred_counts, gt_counts = [], []
-        pred_valid_ratios, gt_valid_ratios = [], []
-        pred_areas, gt_areas = [], []
-        covered_tokens = 0
-        for token, gt in gts.items():
-            pred = deepcopy(results.get(token, {"polygons": [], "scores": [], "labels": []}))
-            pred_polygons = pred.get("polygons", pred.get("vectors", []))
-            gt_polygons = []
-            for polygons in gt.values():
-                gt_polygons.extend(polygons)
+            for thr in self.thresholds:
+                tp_fp_score = [i[thr] for i in tpfp_score_list]
+                tp_fp_score = np.vstack(tp_fp_score) # (num_dets, 3)
+                sort_inds = np.argsort(-tp_fp_score[:, -1])
 
-            pred_summary = self._summarize_sample(pred_polygons)
-            gt_summary = self._summarize_sample(gt_polygons)
-            pred_counts.append(pred_summary["count"])
-            gt_counts.append(gt_summary["count"])
-            pred_valid_ratios.append(pred_summary["valid_ratio"])
-            gt_valid_ratios.append(gt_summary["valid_ratio"])
-            pred_areas.append(pred_summary["mean_area"])
-            gt_areas.append(gt_summary["mean_area"])
-            if pred_summary["count"] > 0:
-                covered_tokens += 1
+                tp = tp_fp_score[sort_inds, 0] # (num_dets,)
+                fp = tp_fp_score[sort_inds, 1] # (num_dets,)
+                tp = np.cumsum(tp, axis=0)
+                fp = np.cumsum(fp, axis=0)
+                eps = np.finfo(np.float32).eps
+                recalls = tp / np.maximum(num_gts[label], eps)
+                precisions = tp / np.maximum((tp + fp), eps)
 
-        result_dict = {
-            "occ_num_samples": float(len(gts)),
-            "occ_gt_mean_polygons": float(np.mean(gt_counts)) if gt_counts else 0.0,
-            "occ_pred_mean_polygons": float(np.mean(pred_counts)) if pred_counts else 0.0,
-            "occ_gt_valid_ratio": float(np.mean(gt_valid_ratios)) if gt_valid_ratios else 0.0,
-            "occ_pred_valid_ratio": float(np.mean(pred_valid_ratios)) if pred_valid_ratios else 0.0,
-            "occ_gt_mean_area": float(np.mean(gt_areas)) if gt_areas else 0.0,
-            "occ_pred_mean_area": float(np.mean(pred_areas)) if pred_areas else 0.0,
-            "occ_pred_coverage": covered_tokens / max(len(gts), 1),
-        }
+                AP = average_precision(recalls, precisions, 'area')
+                sum_AP += AP
+                result_dict[self.id2cat[label]].update({f'AP@{thr}': AP})
 
-        table = prettytable.PrettyTable(["metric", "value"])
-        for key, value in result_dict.items():
-            table.add_row([key, round(value, 4)])
-        print_log("\n" + str(table), logger=logger)
-        return result_dict
+            pbar.update()
+
+            AP = sum_AP / len(self.thresholds)
+            sum_mAP += AP
+
+            result_dict[self.id2cat[label]].update({f'AP': AP})
+
+        if self.n_workers > 0:
+            pool.close()
+
+        mAP = sum_mAP / len(self.id2cat.keys())
+        result_dict.update({'mAP': mAP})
+
+        print(f"finished in {time() - start:.2f}s")
+
+        # print results
+        table = prettytable.PrettyTable(['category', 'num_preds', 'num_gts'] +
+                [f'AP@{thr}' for thr in self.thresholds] + ['AP'])
+        for label in self.id2cat.keys():
+            table.add_row([
+                self.id2cat[label],
+                result_dict[self.id2cat[label]]['num_preds'],
+                result_dict[self.id2cat[label]]['num_gts'],
+                *[round(result_dict[self.id2cat[label]][f'AP@{thr}'], 4) for thr in self.thresholds],
+                round(result_dict[self.id2cat[label]]['AP'], 4),
+            ])
+
+        from mmcv.utils import print_log
+        print_log('\n'+str(table), logger=logger)
+        mAP_normal = 0
+        for label in self.id2cat.keys():
+            for thr in self.thresholds:
+                mAP_normal += result_dict[self.id2cat[label]][f'AP@{thr}']
+        mAP_normal = mAP_normal / (len(self.id2cat.keys()) * len(self.thresholds))
+
+        print_log(f'mAP_normal = {mAP_normal:.4f}\n', logger=logger)
+
+        new_result_dict = {}
+        for name in self.cat2id:
+            new_result_dict[name] = result_dict[name]['AP']
+        new_result_dict['mAP_normal'] = mAP_normal
+        return new_result_dict

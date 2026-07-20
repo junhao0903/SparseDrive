@@ -85,6 +85,7 @@ class NuScenes3DDataset(Dataset):
         data_root=None,
         classes=None,
         map_classes=None,
+        occ_classes=None,
         load_interval=1,
         with_velocity=True,
         modality=None,
@@ -114,8 +115,10 @@ class NuScenes3DDataset(Dataset):
 
         if classes is not None:
             self.CLASSES = classes
-        if map_classes is not None: 
+        if map_classes is not None:
             self.MAP_CLASSES = map_classes
+        if occ_classes is not None:
+            self.OCC_CLASSES = occ_classes
         self.cat2id = {name: i for i, name in enumerate(self.CLASSES)}
         self.data_infos = self.load_annotations(self.ann_file)
         self.polygon_occ_annos = self.load_polygon_occ_annotations(
@@ -998,10 +1001,9 @@ class NuScenes3DDataset(Dataset):
             metric_str += f'boundary= {results_dict["boundary"]:.4f}\n' 
             metric_str += f'mAP_normal= {results_dict["mAP_normal"]:.4f}\n\n' 
 
-        if "occ_pred_valid_ratio" in results_dict:
-            metric_str += f'occ_pred_valid_ratio= {results_dict["occ_pred_valid_ratio"]:.4f}\n'
-            metric_str += f'occ_pred_mean_polygons= {results_dict["occ_pred_mean_polygons"]:.4f}\n'
-            metric_str += f'occ_pred_coverage= {results_dict["occ_pred_coverage"]:.4f}\n\n'
+        if "driveable_surface" in results_dict:
+            metric_str += f'occ_mAP= {results_dict.get("mAP", 0):.4f}\n'
+            metric_str += f'occ_mAP_normal= {results_dict.get("mAP_normal", 0):.4f}\n\n'
 
         if "car_EPA" in results_dict:
             metric_str += f'Car / Ped\n' 
