@@ -162,9 +162,11 @@ def main():
         # update configs according to CLI args if args.work_dir is not None
         cfg.work_dir = args.work_dir
     elif cfg.get("work_dir", None) is None:
-        # use config filename as default work_dir if cfg.work_dir is None
+        # use config filename + timestamp as default work_dir
+        timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
         cfg.work_dir = osp.join(
-            "./work_dirs", osp.splitext(osp.basename(args.config))[0]
+            "./work_dirs",
+            osp.splitext(osp.basename(args.config))[0] + "_" + timestamp,
         )
     if args.resume_from is not None:
         cfg.resume_from = args.resume_from

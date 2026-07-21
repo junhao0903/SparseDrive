@@ -703,6 +703,10 @@ runner = dict(
     max_iters=num_iters_per_epoch * num_epochs,
 )
 
+custom_hooks = [
+    dict(type='SaveBestLossHook', key='loss', filename='best_loss.pth'),
+]
+
 # ================== eval ========================
 eval_mode = dict(
     with_det=True,
@@ -716,4 +720,6 @@ eval_mode = dict(
 evaluation = dict(
     interval=num_iters_per_epoch*checkpoint_epoch_interval,
     eval_mode=eval_mode,
+    save_best='img_bbox_NuScenes/NDS',  # auto-save best checkpoint by NDS
+    rule='greater',  # higher NDS is better
 )
