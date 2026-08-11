@@ -403,6 +403,17 @@ model = dict(
                     loss_weight=10.0,
                     beta=0.01,
                 ),
+                loss_chamfer=dict(
+                    type='PolygonChamferLoss',
+                    loss_weight=0.5,
+                ),
+                loss_raster=dict(
+                    type='PolygonRasterLoss',
+                    loss_weight=2.0,
+                    grid_size=(150, 75),
+                    sharpness=10.0,
+                    bce_weight=0.0,
+                ),
                 num_sample=polygon_occ_num_sample,
                 roi_size=roi_size,
             ),
