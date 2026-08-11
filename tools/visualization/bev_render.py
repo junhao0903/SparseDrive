@@ -4,6 +4,9 @@ import cv2
 
 import matplotlib
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+from matplotlib.patches import Patch
+from shapely.geometry import Point, Polygon
 
 from projects.mmdet3d_plugin.datasets.utils import box3d_to_corners
  
@@ -11,6 +14,34 @@ CMD_LIST = ['Turn Right', 'Turn Left', 'Go Straight']
 COLOR_VECTORS = ['cornflowerblue', 'royalblue', 'slategrey']
 SCORE_THRESH = 0.3
 MAP_SCORE_THRESH = 0.3
+OCC_GRID_STEP = 0.4
+OCC_CLASS_NAMES = {
+    0: 'barrier',
+    1: 'car',
+    2: 'large_vehicle',
+    3: 'two_wheeler',
+    4: 'pedestrian',
+    5: 'traffic_cone',
+    6: 'driveable_surface',
+    7: 'sidewalk',
+    8: 'terrain',
+    9: 'manmade',
+    10: 'vegetation',
+}
+OCC_COLORS = [
+    '#ff0000',  # barrier
+    '#0066ff',  # car
+    '#ff8c00',  # large_vehicle
+    '#8a2be2',  # two_wheeler
+    '#ff1493',  # pedestrian
+    '#ffd700',  # traffic_cone
+    '#00aa00',  # driveable_surface
+    '#00cfff',  # sidewalk
+    '#a0522d',  # terrain
+    '#808080',  # manmade
+    '#9acd32',  # vegetation
+]
+OCC_BOX_CLASSES = {0, 1, 2, 3, 4, 5}
 color_mapping = np.asarray([
     [0, 0, 0],
     [255, 179, 0],
@@ -320,11 +351,9 @@ class BEVRender:
         polygon_geoms = data.get('polygon_occ_geoms')
         if polygon_geoms is None:
             return
-        for label, polygon_list in polygon_geoms.items():
-            color = color_mapping[label % len(color_mapping)]
-            for polygon in polygon_list:
-                pts = np.asarray(polygon.exterior.coords, dtype=np.float32)
-                self.axes.plot(pts[:, 0], pts[:, 1], color=color, linewidth=2, linestyle='--')
+        annos = self._normalize_occ_annos(polygon_geoms)
+        self._draw_occ_raster(annos, alpha=0.72)
+        self._draw_occ_outlines(annos, linestyle='--')
 
     def draw_occ_pred(self, result):
         if not (self.plot_choices['draw_pred'] and self.plot_choices.get('occ', False)):
@@ -332,14 +361,9 @@ class BEVRender:
         occ_result = result.get('occ', result)
         if 'polygons' not in occ_result:
             return
-        for i in range(len(occ_result['scores'])):
-            score = occ_result['scores'][i]
-            if score < MAP_SCORE_THRESH:
-                continue
-            color = color_mapping[int(occ_result['labels'][i]) % len(color_mapping)]
-            pts = np.asarray(occ_result['polygons'][i], dtype=np.float32)
-            pts = np.concatenate([pts, pts[:1]], axis=0)
-            self.axes.plot(pts[:, 0], pts[:, 1], color=color, linewidth=2, linestyle='-')
+        annos = self._normalize_occ_pred_annos(occ_result)
+        self._draw_occ_raster(annos, alpha=0.85)
+        self._draw_occ_outlines(annos, linestyle='-')
 
     def draw_planning_gt(self, data):
         if not self.plot_choices['planning']:
@@ -428,6 +452,23 @@ class BEVRender:
         im.set_zorder(2)
 
     def _render_legend(self):
+        if self.plot_choices.get('occ', False):
+            handles = [
+                Patch(facecolor=OCC_COLORS[idx], edgecolor='black', label=OCC_CLASS_NAMES[idx])
+                for idx in sorted(OCC_CLASS_NAMES.keys())
+            ]
+            legend = self.axes.legend(
+                handles=handles,
+                loc='upper right',
+                bbox_to_anchor=(0.985, 0.985),
+                fontsize=10,
+                framealpha=0.95,
+                facecolor='white',
+                edgecolor='black',
+                ncol=1,
+            )
+            legend.set_zorder(20)
+            return
         legend = cv2.imread('resources/legend.png')
         legend = cv2.cvtColor(legend, cv2.COLOR_BGR2RGB)
         self.axes.imshow(legend, extent=(15, 40, -40, -30))
@@ -435,3 +476,101 @@ class BEVRender:
     def _render_command(self, data):
         cmd = data['gt_ego_fut_cmd'].argmax()
         self.axes.text(-38, -38, CMD_LIST[cmd], fontsize=60)
+
+    def _normalize_occ_annos(self, polygon_geoms):
+        annos = {}
+        for label, polygon_list in polygon_geoms.items():
+            label_int = int(label)
+            for polygon in polygon_list:
+                pts = self._polygon_to_coords(polygon)
+                if pts is None:
+                    continue
+                annos.setdefault(label_int, []).append(pts)
+        return annos
+
+    def _normalize_occ_pred_annos(self, occ_result):
+        annos = {}
+        for polygon, label, score in zip(
+            occ_result['polygons'], occ_result['labels'], occ_result['scores']
+        ):
+            if float(score) < MAP_SCORE_THRESH:
+                continue
+            pts = self._polygon_to_coords(polygon)
+            if pts is None:
+                continue
+            annos.setdefault(int(label), []).append(pts)
+        return annos
+
+    def _polygon_to_coords(self, polygon):
+        if hasattr(polygon, 'exterior'):
+            pts = np.asarray(polygon.exterior.coords, dtype=np.float32)
+        else:
+            pts = np.asarray(polygon, dtype=np.float32)
+        if pts.ndim != 2 or pts.shape[1] != 2 or len(pts) < 3:
+            return None
+        if np.allclose(pts[0], pts[-1]):
+            pts = pts[:-1]
+        if len(pts) < 3:
+            return None
+        return pts
+
+    def _ordered_occ_labels(self, annos):
+        return sorted(
+            annos.keys(),
+            key=lambda label: (label in OCC_BOX_CLASSES, label),
+        )
+
+    def _rasterize_occ_polygons(self, annos):
+        xs = np.arange(-self.xlim + OCC_GRID_STEP / 2, self.xlim, OCC_GRID_STEP)
+        ys = np.arange(-self.ylim + OCC_GRID_STEP / 2, self.ylim, OCC_GRID_STEP)
+        mask = np.full((len(xs), len(ys)), -1, dtype=np.int32)
+
+        for label in self._ordered_occ_labels(annos):
+            for polygon in annos[label]:
+                poly = Polygon(np.asarray(polygon, dtype=np.float32))
+                if poly.is_empty or poly.area <= 0:
+                    continue
+                minx, miny, maxx, maxy = poly.bounds
+                xi0 = max(0, int(np.floor((minx + self.xlim) / OCC_GRID_STEP)))
+                xi1 = min(len(xs), int(np.ceil((maxx + self.xlim) / OCC_GRID_STEP)))
+                yi0 = max(0, int(np.floor((miny + self.ylim) / OCC_GRID_STEP)))
+                yi1 = min(len(ys), int(np.ceil((maxy + self.ylim) / OCC_GRID_STEP)))
+                for i in range(xi0, xi1):
+                    for j in range(yi0, yi1):
+                        point = Point(float(xs[i]), float(ys[j]))
+                        if poly.contains(point) or poly.touches(point):
+                            mask[i, j] = label
+        return mask
+
+    def _draw_occ_raster(self, annos, alpha):
+        if not annos:
+            return
+        mask = self._rasterize_occ_polygons(annos)
+        masked = np.ma.masked_where(mask < 0, mask).T
+        cmap = mcolors.ListedColormap(OCC_COLORS)
+        norm = mcolors.BoundaryNorm(np.arange(-0.5, len(OCC_COLORS) + 0.5), cmap.N)
+        self.axes.imshow(
+            masked,
+            origin='lower',
+            extent=(-self.xlim, self.xlim, -self.ylim, self.ylim),
+            interpolation='nearest',
+            cmap=cmap,
+            norm=norm,
+            alpha=alpha,
+            zorder=0,
+        )
+
+    def _draw_occ_outlines(self, annos, linestyle):
+        for label in self._ordered_occ_labels(annos):
+            color = OCC_COLORS[label % len(OCC_COLORS)]
+            for polygon in annos[label]:
+                pts = np.asarray(polygon, dtype=np.float32)
+                closed = np.concatenate([pts, pts[:1]], axis=0)
+                self.axes.plot(
+                    closed[:, 0],
+                    closed[:, 1],
+                    color=color,
+                    linewidth=2,
+                    linestyle=linestyle,
+                    zorder=5,
+                )
